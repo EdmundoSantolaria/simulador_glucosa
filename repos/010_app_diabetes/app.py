@@ -89,26 +89,87 @@ with st.sidebar:
             help="Cuántos mg/dL reduce 1 unidad de insulina respecto a la glucosa objetivo. También escala el efecto de la insulina en el modelo.",
         )
 
+    # ── CÁLCULO DE DOSIS RECOMENDADA ─────────────────────────────────────────
+    # Se calcula aquí (entre Paciente e Insulina) para que esté disponible en
+    # el expander de Insulina y en el callback del botón "usar recomendada".
+    _coverage = carbs_g / ic_ratio if ic_ratio > 0 else 0.0
+    _correction = (
+        max(0.0, (glucose_initial - glucose_target) / correction_factor)
+        if correction_factor > 0 else 0.0
+    )
+    _suggested = _coverage + _correction
+    # Redondear al múltiplo de 0.5 más cercano (granularidad de la pluma de insulina)
+    _suggested_rounded = round(_suggested * 2) / 2
+
+    # Inicializar el estado del slider la primera vez (usa la dosis recomendada)
+    if "insulin_units_val" not in st.session_state:
+        st.session_state["insulin_units_val"] = _suggested_rounded
+
     # ── GRUPO: Insulina ──────────────────────────────────────────────────────
     with st.expander("💉 Insulina", expanded=True):
+
+        # Dosis recomendada dinámica —————————————————————————————————————————
+        st.markdown("**Dosis recomendada**")
+        rec_col1, rec_col2 = st.columns([3, 2])
+        with rec_col1:
+            st.metric(
+                label="Cobertura + Corrección",
+                value=f"{_suggested:.1f} U",
+                delta=f"{_coverage:.1f} + {_correction:.1f} U",
+                delta_color="off",
+                help=(
+                    f"Cobertura = {carbs_g} g ÷ {ic_ratio} g/U = {_coverage:.1f} U  \n"
+                    f"Corrección = ({glucose_initial}−{glucose_target}) mg/dL "
+                    f"÷ {correction_factor} mg/dL·U⁻¹ = {_correction:.1f} U"
+                ),
+            )
+        with rec_col2:
+            # Callback que actualiza el slider al valor recomendado actual
+            def _apply_recommended():
+                st.session_state["insulin_units_val"] = round(
+                    (
+                        (carbs_g / ic_ratio if ic_ratio > 0 else 0.0)
+                        + max(0.0, (glucose_initial - glucose_target) / correction_factor
+                              if correction_factor > 0 else 0.0)
+                    ) * 2
+                ) / 2
+
+            st.button(
+                "← Usar",
+                on_click=_apply_recommended,
+                help="Aplica la dosis recomendada al selector de abajo.",
+                use_container_width=True,
+            )
+
+        st.divider()
+
+        # Selector de dosis real (independiente de la recomendación) ————————
         insulin_units = st.slider(
-            "Unidades de insulina administradas",
-            min_value=0.0, max_value=50.0, value=6.0, step=0.5,
-            help="Dosis real del bolo prandial inyectado.",
+            "Unidades administradas",
+            min_value=0.0, max_value=50.0, step=0.5,
+            key="insulin_units_val",
+            help=(
+                "Dosis real del bolo prandial.  \n"
+                "Puede diferir de la recomendación. Usa **← Usar** para sincronizar."
+            ),
         )
+
+        st.divider()
+
         insulin_type = st.selectbox(
             "Tipo de insulina",
-            options=["ultrarrápida", "rápida", "regular"],
-            index=1,
+            options=list(model.INSULIN_PROFILES.keys()),
+            index=0,  # Humalog Junior como opción por defecto
             help=(
-                "**Ultrarrápida** (lispro, aspart): pico ~60 min, duración ~4 h.  \n"
-                "**Rápida:** pico ~90 min, duración ~5 h.  \n"
-                "**Regular:** pico ~120 min, duración ~6 h."
+                "**Humalog Junior (lispro):** onset 15 min, pico ~60 min, duración ~4-5 h.  \n"
+                "Curva log-normal: subida rápida (45 min al pico), bajada más lenta.  \n"
+                "---  \n"
+                "**Ultrarrápida / Rápida / Regular:** perfiles genéricos con distribución Gamma."
             ),
         )
         wait_time_min = st.slider(
             "Tiempo de espera bolo → comida (min)",
-            min_value=-30, max_value=60, value=15, step=5,
+            min_value=-30, max_value=60, value=0, step=5,
             help=(
                 "Minutos entre la inyección de insulina y el inicio de la comida.  \n"
                 "**Positivo (+15):** pre-bolo, insulina inyectada 15 min antes de comer.  \n"
@@ -153,23 +214,13 @@ with st.sidebar:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CÁLCULOS AUXILIARES — Insulina sugerida vs administrada
+# (calculados en el sidebar; aquí se exponen con nombres legibles)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Insulina de cobertura: unidades necesarias para cubrir los HC ingeridos
-insulin_coverage = carbs_g / ic_ratio if ic_ratio > 0 else 0.0
-
-# Insulina de corrección: unidades para bajar la glucosa inicial al objetivo
-# Solo aplica si la glucosa inicial supera el objetivo
-insulin_correction = max(
-    0.0,
-    (glucose_initial - glucose_target) / correction_factor
-) if correction_factor > 0 else 0.0
-
-# Total sugerido
-insulin_suggested = insulin_coverage + insulin_correction
-
-# Diferencia entre lo administrado y lo sugerido
-delta_insulin = insulin_units - insulin_suggested
+insulin_coverage   = _coverage    # cobertura de HC
+insulin_correction = _correction  # corrección de hiperglucemia inicial
+insulin_suggested  = _suggested   # total sugerido
+delta_insulin      = insulin_units - insulin_suggested
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LLAMADAS AL MODELO
@@ -478,7 +529,7 @@ with st.expander("📖 Supuestos y limitaciones del modelo"):
     ```
 
     - `meal_rate(t)`: tasa de absorción de glucosa (PDF de una Gamma parametrizada por el IG)
-    - `insulin_rate(t)`: tasa de reducción por insulina (PDF de una Gamma desplazada por el tipo)
+    - `insulin_rate(t)`: tasa de reducción por insulina (PDF Gamma o log-normal según el tipo)
     - `k_clear = 0.01 min⁻¹`: limpieza endógena de glucosa (semivida ≈ 69 min)
 
     **Por qué ODE y no suma directa de curvas:**
@@ -490,11 +541,16 @@ with st.expander("📖 Supuestos y limitaciones del modelo"):
 
     ### Perfiles de insulina (aproximados)
 
-    | Tipo | Pico | k | θ (theta) |
-    |------|------|---|-----------|
-    | Ultrarrápida | ~60 min | 3.0 | 30 |
-    | Rápida | ~90 min | 3.0 | 45 |
-    | Regular | ~120 min | 4.0 | 40 |
+    | Tipo | Distribución | Onset | Pico (desde onset) | Parámetros |
+    |------|-------------|-------|---------------------|------------|
+    | **Humalog Junior (lispro)** | Log-normal | 15 min | ~45 min | μ=4.030, σ=0.472 |
+    | Ultrarrápida | Gamma | 0 min | ~60 min | k=3.0, θ=30 |
+    | Rápida | Gamma | 0 min | ~90 min | k=3.0, θ=45 |
+    | Regular | Gamma | 0 min | ~120 min | k=4.0, θ=40 |
+
+    **Humalog Junior:** la distribución log-normal reproduce la asimetría característica del
+    lispro: subida rápida al pico (~45 min desde onset), bajada progresiva, efecto casi
+    completo a las 2 h desde la inyección.
 
     ### Lo que NO modela este simulador
 

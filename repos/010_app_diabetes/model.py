@@ -93,18 +93,62 @@ GLUCOSE_CLEARANCE_RATE: float = 0.01  # min⁻¹
 # No representa una barrera metabólica real; solo evita valores negativos en el gráfico.
 MIN_GLUCOSE_MGDL: float = 40.0
 
-# Perfiles de insulina: (peak_time_min, k_shape)
-# theta se deriva como: theta = peak_time / (k - 1)
-# Esto garantiza que el pico de la Gamma ocurra exactamente en peak_time.
+# ─────────────────────────────────────────────────────────────────────────────
+# PERFILES DE INSULINA
+# ─────────────────────────────────────────────────────────────────────────────
 #
-# Fuente de referencia (aproximada):
-#   - Ultrarrápida (lispro, aspart): onset ~10 min, pico ~60 min, duración ~4 h
-#   - Rápida (regular soluble): onset ~20 min, pico ~90 min, duración ~5 h
-#   - Regular (NPH-like simple): onset ~30 min, pico ~120 min, duración ~6 h
-INSULIN_PROFILES: dict[str, dict[str, float]] = {
-    "ultrarrápida": {"peak_time": 60.0,  "k": 3.0},
-    "rápida":       {"peak_time": 90.0,  "k": 3.0},
-    "regular":      {"peak_time": 120.0, "k": 4.0},
+# Cada perfil define el comportamiento farmacocinético simplificado de un tipo
+# de insulina. Dos distribuciones disponibles:
+#
+#   "gamma"     : Gamma(k, theta) — simétrica en log-espacio, adecuada para
+#                 perfiles genéricos. Pico en t = onset_delay + (k-1)*theta.
+#
+#   "lognormal" : Log-normal(mu, sigma) evaluada desde el onset — produce
+#                 una subida más rápida y bajada más lenta que la Gamma,
+#                 más representativa de insulinas de rápida absorción como
+#                 Humalog (lispro).
+#
+# onset_delay_min : minutos tras la inyección antes de que empiece cualquier
+#                   efecto. Modela el tiempo de absorción subcutánea inicial.
+#
+# FUENTES (simplificadas para el modelo educativo):
+#   Humalog Junior (lispro): onset ~15 min, pico ~60 min, duración ~4-5 h.
+#     Característica: subida rápida (~45 min desde onset), bajada más lenta.
+#     Ref: Insulin Lispro StatPearls / Howey et al. (1994 Diabetes).
+#   Ultrarrápida genérica: onset ~10 min, pico ~60 min, duración ~4 h.
+#   Rápida (regular): onset ~20 min, pico ~90 min, duración ~5 h.
+#   Regular (NPH-like): onset ~30 min, pico ~120 min, duración ~6 h.
+#
+# Parámetros log-normal para Humalog Junior (calculados analíticamente):
+#   Condiciones: pico en 45 min desde onset (= 60 min desde inyección),
+#   y el 20 % del pico queda a los 105 min desde onset (= 120 min = 2 h).
+#   Solución: mu=4.030, sigma=0.472 evaluados desde t_desde_onset.
+INSULIN_PROFILES: dict[str, dict] = {
+    "Humalog Junior (lispro)": {
+        "distribution":   "lognormal",
+        "onset_delay_min": 15,   # min sin efecto tras inyección
+        "mu":              4.030, # parámetro de ubicación del log-normal
+        "sigma":           0.472, # parámetro de forma: subida rápida, bajada lenta
+        # Resultado: pico a los 60 min de inyección, ~20 % pico a las 2 h
+    },
+    "ultrarrápida": {
+        "distribution":   "gamma",
+        "onset_delay_min": 0,
+        "peak_time":       60.0,  # min desde inyección (= (k-1)*theta)
+        "k":               3.0,
+    },
+    "rápida": {
+        "distribution":   "gamma",
+        "onset_delay_min": 0,
+        "peak_time":       90.0,
+        "k":               3.0,
+    },
+    "regular": {
+        "distribution":   "gamma",
+        "onset_delay_min": 0,
+        "peak_time":       120.0,
+        "k":               4.0,
+    },
 }
 
 # Puntos de referencia para la parametrización por índice glucémico.
@@ -122,6 +166,46 @@ GI_HIGH_THETA: float = 15.0
 # ─────────────────────────────────────────────────────────────────────────────
 # FUNCIÓN AUXILIAR INTERNA
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _lognormal_pdf(t: np.ndarray, mu: float, sigma: float) -> np.ndarray:
+    """
+    Evalúa la PDF de la distribución Log-Normal en log-espacio.
+
+    PDF_LogNormal(t; mu, sigma) = 1/(t * sigma * sqrt(2π)) * exp(-0.5*((ln(t)-mu)/sigma)^2)
+
+    En log-espacio:
+      log(PDF) = -ln(t) - ln(sigma) - 0.5*ln(2π) - 0.5*((ln(t) - mu) / sigma)^2
+
+    Por qué log-normal para Humalog Junior:
+      La distribución Gamma produce una subida y bajada relativamente simétricas
+      en escala logarítmica. La log-normal tiene la propiedad de que la subida al
+      pico es más empinada y la bajada posterior es más gradual, lo que reproduce
+      mejor el perfil PK de insulinas de rápida absorción como lispro:
+        - Absorción subcutánea rápida → subida concentrada en 45-50 min
+        - Eliminación más lenta → cola extendida 2-4 h después del pico
+
+    Modo (pico) de la log-normal: exp(mu - sigma^2)
+    Con mu=4.030, sigma=0.472: modo = exp(4.030 - 0.223) = exp(3.807) = 45 min desde onset.
+
+    Parámetros:
+      t     : array de tiempos desde el onset (valores > 0; t <= 0 → 0)
+      mu    : parámetro de ubicación (log-media)
+      sigma : parámetro de forma (log-desviación estándar)
+
+    Retorna:
+      PDF evaluada en cada punto. Valores donde t <= 0 → 0.
+    """
+    log_2pi = math.log(2.0 * math.pi)
+    log_sigma = math.log(sigma)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ln_t = np.log(np.maximum(t, 1e-12))
+        z = (ln_t - mu) / sigma
+        log_pdf = -ln_t - log_sigma - 0.5 * log_2pi - 0.5 * z * z
+        pdf = np.where(t > 0.0, np.exp(log_pdf), 0.0)
+
+    return pdf
+
 
 def _gamma_pdf_log_stable(t: np.ndarray, k: float, theta: float) -> np.ndarray:
     """
@@ -302,22 +386,39 @@ def insulin_glucose_rate(
         )
 
     profile = INSULIN_PROFILES[insulin_type]
-    k = profile["k"]
-    peak_time = profile["peak_time"]
-
-    # theta derivado para que el pico ocurra exactamente en peak_time
-    theta = peak_time / (k - 1.0)
-
-    # Amplitud de la tasa (mg/dL/U × U = mg/dL, que con la PDF min⁻¹ → mg/dL/min)
     amplitude = units * correction_factor
 
-    # Desplazamiento temporal: pre-bolo positivo adelanta el efecto de la insulina.
-    # En t=0 (inicio de comida), la insulina lleva wait_time_min minutos actuando.
-    t_action = t + wait_time_min
+    # ── Tiempo efectivo desde la inyección ──────────────────────────────────
+    # La insulina se inyecta wait_time_min minutos antes de la comida (si es positivo).
+    # En t=0 (inicio de comida), la insulina lleva wait_time_min minutos desde la inyección.
+    # t_since_injection(t) = t + wait_time_min
+    #
+    # Además, cada perfil tiene un onset_delay: tiempo tras la inyección antes de que
+    # haya cualquier efecto (absorción subcutánea inicial).
+    # t_desde_onset(t) = t_since_injection(t) - onset_delay
+    #                  = t + wait_time_min - onset_delay_min
+    onset_delay = float(profile.get("onset_delay_min", 0))
+    t_desde_onset = t + wait_time_min - onset_delay
 
-    # Evaluar la PDF en t_action (0 donde t_action <= 0: insulina aún no actúa)
-    pdf = _gamma_pdf_log_stable(t_action, k, theta)
-    pdf = np.where(t_action > 0.0, pdf, 0.0)
+    # ── Evaluar PDF según distribución del perfil ────────────────────────────
+    distribution = profile.get("distribution", "gamma")
+
+    if distribution == "lognormal":
+        # Distribución Log-Normal: subida rápida, bajada lenta.
+        # t_desde_onset es el tiempo desde que la insulina empieza a actuar.
+        mu = float(profile["mu"])
+        sigma = float(profile["sigma"])
+        pdf = _lognormal_pdf(t_desde_onset, mu, sigma)
+
+    else:  # "gamma" (por defecto)
+        # Distribución Gamma: pico en (k-1)*theta desde el onset.
+        k = float(profile["k"])
+        peak_time_from_onset = float(profile["peak_time"]) - onset_delay
+        theta = peak_time_from_onset / (k - 1.0)
+        pdf = _gamma_pdf_log_stable(t_desde_onset, k, theta)
+
+    # Sin efecto antes del onset (t_desde_onset <= 0)
+    pdf = np.where(t_desde_onset > 0.0, pdf, 0.0)
 
     return amplitude * pdf
 
