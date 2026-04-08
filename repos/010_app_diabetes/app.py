@@ -34,7 +34,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Sección",
-        options=["🩸 Simulador", "📖 Guía", "🔬 Aproximaciones del modelo"],
+        options=["🩸 Simulador", "📖 Guía", "🔬 Aproximaciones del modelo", "📚 Relaciones y referencias"],
         label_visibility="collapsed",
         key="nav_page",
     )
@@ -879,3 +879,261 @@ for i in range(1, n):
         st.metric("💉 Efecto insulina",   "✅ Activo" if use_ins  else "❌ Desactivado")
     with term_col3:
         st.metric("🫀 Clearance",         "✅ Activo" if use_clr  else "❌ Desactivado")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PÁGINA: RELACIONES Y REFERENCIAS
+# ═════════════════════════════════════════════════════════════════════════════
+
+elif page == "📚 Relaciones y referencias":
+
+    st.title("📚 Relaciones fisiológicas y referencias médicas")
+    st.caption(
+        "Fundamentos clínicos y bibliográficos de las relaciones utilizadas en el simulador. "
+        "Las fórmulas son simplificaciones con fines educativos."
+    )
+
+    # ── 1. Reglas de la dosis ──────────────────────────────────────────────
+    with st.expander("💉 Regla 1700/500 — Factor de corrección y proporción de carbohidratos", expanded=True):
+        st.markdown("""
+Estas dos reglas empíricas permiten estimar el **factor de corrección (FC)** y la
+**proporción de carbohidratos (IC)** a partir de la **dosis diaria total de insulina (DDT)**:
+
+```
+Factor de corrección  FC  =  1700 / DDT   (mg/dL por unidad)
+Proporción HC         IC  =   500 / DDT   (gramos de HC por unidad)
+```
+
+**Ejemplo:** paciente con DDT = 12 U/día
+- FC  = 1700 / 12 = **142 mg/dL/U** → 1 U baja 142 mg/dL
+- IC  = 500  / 12 = **42 g/U** → 1 U cubre 42 g de HC
+
+> Para insulina regular (más lenta) se usa 1500 en lugar de 1700.
+
+**Consecuencia directa — ratio FC/IC:**
+```
+FC / IC  =  1700 / 500  ≈  3.4
+```
+Este ratio es aproximadamente constante para cualquier paciente y representa la
+**subida de glucosa en mg/dL que produce 1 gramo de HC** en ese individuo.
+El modelo usa `meal_rate_scale = FC / IC` para garantizar que la dosis recomendada
+devuelva exactamente la glucosa al objetivo, sin hiper ni hipo artificial.
+
+**Referencias:**
+- Walsh J, Roberts R. *Pumping Insulin*, 5.ª ed. Torrey Pines Press, 2012.
+- Davidson PC et al. "55-rule for estimating the insulin-to-carbohydrate ratio."
+  *Diabetes Spectrum* 2003; 16(1):51–52.
+- Scheiner G. *Think Like a Pancreas*, 3.ª ed. Da Capo Press, 2020.
+        """)
+
+    # ── 2. Objetivo glucémico ─────────────────────────────────────────────
+    with st.expander("🎯 Objetivo glucémico — 110 mg/dL y rango TIR 70–180 mg/dL", expanded=False):
+        st.markdown("""
+**Objetivo preprandial:**
+La ADA recomienda una glucosa preprandial de **80–130 mg/dL** para adultos con DM1/DM2.
+El simulador usa **110 mg/dL** como valor central de ese rango.
+
+**Rango TIR (Tiempo en Rango):**
+El consenso internacional define el rango objetivo como **70–180 mg/dL**, con un objetivo
+de TIR ≥ 70 % para la mayoría de adultos con diabetes.
+
+| Categoría | Umbral | Objetivo |
+|---|---|---|
+| Hipoglucemia nivel 1 | < 70 mg/dL | < 4 % del tiempo |
+| Hipoglucemia nivel 2 | < 54 mg/dL | < 1 % del tiempo |
+| Rango objetivo (TIR) | 70–180 mg/dL | ≥ 70 % |
+| Hiperglucemia | > 180 mg/dL | < 25 % del tiempo |
+| Hiperglucemia severa | > 250 mg/dL | < 5 % del tiempo |
+
+**Referencias:**
+- ADA. "Standards of Medical Care in Diabetes — 2024." *Diabetes Care* 2024; 47(Suppl 1).
+- Battelino T et al. "Clinical targets for continuous glucose monitoring data interpretation."
+  *Diabetes Care* 2019; 42(8):1593–1603.
+- Danne T et al. "International Consensus on Use of Continuous Glucose Monitoring."
+  *Diabetes Care* 2017; 40(12):1631–1640.
+        """)
+
+    # ── 3. Perfil farmacocinético insulina lispro ─────────────────────────
+    with st.expander("⏱️ Perfil PK de la insulina — Humalog (lispro) y análogos rápidos", expanded=False):
+        st.markdown("""
+Los perfiles de acción de los análogos de insulina rápida usados en el modelo:
+
+| Insulina | Onset | Pico | Duración |
+|---|---|---|---|
+| **Lispro (Humalog)** | 10–15 min | 45–75 min | 4–5 h |
+| **Aspart (NovoRapid)** | 10–20 min | 40–50 min | 3–5 h |
+| **Regular (Humulin R)** | 30–60 min | 90–120 min | 5–8 h |
+
+**Modelado como distribución Log-Normal (Humalog Junior):**
+La distribución Log-Normal reproduce la asimetría característica del lispro:
+subida rápida hacia el pico (~45 min desde onset) y bajada más lenta y prolongada.
+La distribución Gamma, en cambio, tiene flancos más simétricos y se usa para los
+perfiles genéricos.
+
+```
+PDF_LogNormal(t; μ=4.030, σ=0.472)   →   pico en exp(μ − σ²) ≈ 45 min desde onset
+```
+
+**Referencias:**
+- Howey DH et al. "[Lys(B28), Pro(B29)]-human insulin: a rapidly absorbed analogue of human insulin."
+  *Diabetes* 1994; 43(3):396–402.
+- Brunner GA et al. "Pharmacokinetic and pharmacodynamic properties of three rapid-acting insulin analogues."
+  *Diabetic Medicine* 2000; 17(3):216–222.
+- Prescribing information Humalog® (insulin lispro injection). Eli Lilly, 2022.
+        """)
+
+    # ── 4. Tiempo de espera (pre-bolo) ────────────────────────────────────
+    with st.expander("⏰ Tiempo de espera — evidencia del pre-bolo", expanded=False):
+        st.markdown("""
+El **tiempo de espera entre la inyección y el inicio de la comida** (pre-bolo) es una
+de las estrategias con mayor impacto en el control postprandial para insulinas rápidas.
+
+**Mecanismo:** la insulina rápida tarda 10–20 min en empezar a actuar y 45–75 min en
+alcanzar su pico. Si se inyecta en el momento de comer, la glucosa de la comida lleva
+ventaja → pico más alto.
+
+**Evidencia clínica:**
+
+| Pre-bolo | Reducción de glucosa postprandial (vs bolo simultáneo) |
+|---|---|
+| 0 min | Referencia |
+| 15 min | −20–40 mg/dL en el pico |
+| 20–30 min | −30–60 mg/dL en el pico |
+
+La magnitud depende del índice glucémico y de la glucosa basal previa.
+
+**Referencias:**
+- Cobry E et al. "Timing of meal insulin boluses to achieve optimal postprandial glycemic control
+  in patients with type 1 diabetes." *Diabetes Technology & Therapeutics* 2010; 12(3):173–177.
+- Luijf YM et al. "Premeal injection of rapid-acting insulin reduces postprandial glycemic
+  excursions in type 1 diabetes." *Diabetes Care* 2010; 33(10):2152–2155.
+- Slattery D et al. "Optimal prandial timing of bolus insulin in diabetes management."
+  *Diabetes, Obesity and Metabolism* 2018; 20(5):1081–1091.
+        """)
+
+    # ── 5. Índice glucémico ───────────────────────────────────────────────
+    with st.expander("🍞 Índice glucémico — clasificación y efecto en la curva", expanded=False):
+        st.markdown("""
+El **índice glucémico (IG)** mide la velocidad a la que un alimento eleva la glucosa
+en sangre comparado con glucosa pura (IG = 100).
+
+**Clasificación estándar:**
+
+| Categoría | IG | Ejemplos |
+|---|---|---|
+| Bajo | < 55 | Legumbres, yogur, manzana, pasta al dente |
+| Medio | 55–70 | Plátano maduro, arroz basmati, pan de centeno |
+| Alto | > 70 | Pan blanco, arroz blanco, patata cocida, zumos |
+
+**Efecto en el modelo:**
+- IG alto → parámetro de forma `k = 2` (Gamma más asimétrica, pico más precoz)
+- IG bajo → `k = 4` (Gamma más suave, pico tardío ~60–80 min)
+- El IG también escala la amplitud mediante `ig_amplitude_factor ∈ [0.6, 1.4]`
+
+**Limitación:** el IG varía según el método de cocción, la madurez del alimento,
+la combinación con proteínas o grasas, y la persona. Se modela como un valor fijo.
+
+**Referencias:**
+- Atkinson FS et al. "International tables of glycemic index and glycemic load values 2021."
+  *Diabetes Care* 2021; 44(9):2529–2531.
+- Jenkins DJ et al. "Glycemic index of foods: a physiological basis for carbohydrate exchange."
+  *American Journal of Clinical Nutrition* 1981; 34(3):362–366.
+- Brand-Miller J et al. *The New Glucose Revolution*. Marlowe & Co., 2003.
+        """)
+
+    # ── 6. Absorción de la comida — modelo Gamma ──────────────────────────
+    with st.expander("📐 Modelo de absorción intestinal — distribución Gamma", expanded=False):
+        st.markdown("""
+La absorción intestinal de glucosa se modela como la **PDF de una distribución Gamma**,
+elección estándar en modelos farmacocinéticos de absorción oral de primer orden:
+
+```
+meal_rate(t) = A · Gamma(t; k, θ)
+A            = carbs_g × meal_rate_scale × ig_amplitude_factor × gi_sensitivity
+```
+
+**¿Por qué la Gamma?**
+- Soporte en `[0, ∞)` — la absorción no puede ser negativa ni anticipada.
+- Dos parámetros independientes: forma (`k`) y escala (`θ`).
+- La integral de la PDF es 1, por lo que `A` representa la glucosa total absorbida.
+- Es la distribución derivada del modelo compartimental de vaciado gástrico de orden 1
+  (convolutivo): `k` compartimentos en serie con constante de vaciado `1/θ`.
+
+**Modelo compartimental equivalente:**
+El modelo GI de Hovorka (2004), ampliamente citado, también usa una cadena de
+compartimentos que converge en una distribución Gamma para la glucosa intestinal.
+
+**Referencias:**
+- Hovorka R et al. "Nonlinear model predictive control of glucose concentration in subjects
+  with type 1 diabetes." *Physiological Measurement* 2004; 25(4):905–920.
+- Dalla Man C et al. "Meal simulation model of the glucose-insulin system."
+  *IEEE Transactions on Biomedical Engineering* 2007; 54(10):1740–1749.
+- Cobelli C et al. "Diabetes: Models, Signals, and Control." *IEEE Reviews in Biomedical
+  Engineering* 2009; 2:54–96.
+        """)
+
+    # ── 7. Regulación endógena — Bergman Minimal Model ────────────────────
+    with st.expander("🫀 Regulación endógena — Bergman Minimal Model", expanded=False):
+        st.markdown("""
+El término de **clearance endógeno** del simulador deriva del *Minimal Model* de Bergman:
+
+```
+dG/dt = ... − k_clear × (G(t) − G_basal)
+k_clear = 0.01 min⁻¹   →   semivida ≈ 69 min
+```
+
+Este término representa la **captación neta de glucosa** por músculo, hígado y tejidos
+periféricos, proporcional al exceso sobre la basal. En el Minimal Model original, este
+parámetro se denomina `p1` o `SG` (glucose effectiveness).
+
+**Rango publicado para SG:** 0.01–0.03 min⁻¹ (media ~0.02 en adultos sanos).
+El modelo usa 0.01 para que la excursión postprandial sea visible y educativamente
+representativa; valores más altos aplanarían demasiado la curva.
+
+**Lo que simplifica:**
+- No incluye la **respuesta glucagón** (contrarregulatoria ante hipoglucemia).
+- No incluye **gluconeogénesis hepática** dinámica.
+- `k_clear` constante: en realidad varía con ejercicio, estrés y resistencia a la insulina.
+
+**Referencias:**
+- Bergman RN et al. "Quantitative estimation of insulin sensitivity."
+  *American Journal of Physiology* 1979; 236(6):E667–677.
+- Bergman RN et al. "Physiologic evaluation of factors controlling glucose tolerance in man."
+  *Journal of Clinical Investigation* 1981; 68(6):1456–1467.
+- Pacini G, Bergman RN. "MINMOD: a computer program to calculate insulin sensitivity and
+  pancreatic responsivity from the frequently sampled intravenous glucose tolerance test."
+  *Computer Methods and Programs in Biomedicine* 1986; 23(2):113–122.
+        """)
+
+    # ── 8. Coherencia del modelo CF/IC ────────────────────────────────────
+    with st.expander("⚖️ Relación FC/IC y calibración del modelo", expanded=False):
+        st.markdown("""
+Una consecuencia directa de las reglas 1700/500 es que el ratio **FC/IC ≈ 3.4** es
+aproximadamente constante para cualquier paciente:
+
+```
+FC / IC  =  (1700 / DDT) / (500 / DDT)  =  1700 / 500  ≈  3.4
+```
+
+En el simulador, `meal_rate_scale = FC / IC` porque este ratio captura cuántos **mg/dL
+sube la glucosa por gramo de HC** en ese paciente concreto. Es la cantidad de glucosa
+que entra al sistema por cada gramo de HC absorbido.
+
+**Verificación de consistencia:**
+
+| Perfil paciente | FC | IC | FC/IC | Dosis 60g | Efecto insulina | Efecto comida |
+|---|---|---|---|---|---|---|
+| Resistente (adulto) | 40 | 10 | 4.0 | 6.0 U | 240 mg/dL | ~240 mg/dL ✓ |
+| Sensible (DT1 niño) | 142 | 18 | 7.9 | 3.3 U | 473 mg/dL | ~473 mg/dL ✓ |
+| Muy sensible | 200 | 50 | 4.0 | 1.2 U | 240 mg/dL | ~240 mg/dL ✓ |
+
+Con `meal_rate_scale` fijo a 4.0, los perfiles con FC/IC ≠ 4 producen hipo o hiperglucemia
+artificial. Al usar `meal_rate_scale = FC / IC`, el modelo es **autoconsistente para cualquier
+perfil de paciente**.
+
+**Referencias:**
+- Walsh J, Roberts R. *Pumping Insulin*, 5.ª ed. Torrey Pines Press, 2012. Cap. 10.
+- Scheiner G. *Think Like a Pancreas*, 3.ª ed. Da Capo Press, 2020. Cap. 8.
+        """)
+
+    st.caption("Uso exclusivamente educativo. Las referencias son fuentes primarias y libros de texto; no constituyen guía clínica.")
