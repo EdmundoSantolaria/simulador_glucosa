@@ -270,6 +270,7 @@ def meal_glucose_rate(
     glycemic_index: float,
     absorption_time_min: float = 90.0,
     gi_sensitivity: float = 1.0,
+    meal_rate_scale: float = MEAL_RATE_SCALE,
 ) -> np.ndarray:
     """
     Calcula la TASA de absorción de glucosa por la comida (mg/dL/min).
@@ -296,6 +297,11 @@ def meal_glucose_rate(
       glycemic_index      : índice glucémico del alimento (1-100)
       absorption_time_min : modifica la escala theta (referencia neutra: 90 min)
       gi_sensitivity      : multiplicador de amplitud adicional [0.5-2.0]
+      meal_rate_scale     : escala de absorción glucosa (mg/dL/min por g·PDF).
+                            Por defecto usa la constante global MEAL_RATE_SCALE.
+                            Pasar correction_factor/ic_ratio desde app.py garantiza
+                            que el efecto de la comida sea coherente con el perfil
+                            del paciente (CF/IC ≈ mg/dL que sube 1 g de HC).
 
     Retorna:
       Array 1D con la tasa de absorción en mg/dL/min.
@@ -324,9 +330,9 @@ def meal_glucose_rate(
     ig_amplitude_factor = 0.6 + ig_normalized * 0.8   # rango [0.6, 1.4]
 
     # 4. Amplitud total de la tasa de absorción
-    # MEAL_RATE_SCALE × carbs_g da la tasa en (mg/dL/min) por unidad de PDF.
+    # meal_rate_scale × carbs_g da la tasa en (mg/dL/min) por unidad de PDF.
     # Unidades de la PDF: min⁻¹ → amplitude tiene unidades de mg/dL.
-    amplitude = carbs_g * MEAL_RATE_SCALE * gi_sensitivity * ig_amplitude_factor
+    amplitude = carbs_g * meal_rate_scale * gi_sensitivity * ig_amplitude_factor
 
     # 5. Evaluar la PDF de la Gamma (valores en min⁻¹)
     pdf = _gamma_pdf_log_stable(t, k_base, theta)

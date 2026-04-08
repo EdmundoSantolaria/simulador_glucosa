@@ -47,9 +47,9 @@ _DEFAULTS: dict = {
     "carbs_g":             60,
     "glycemic_index":      60,
     "glucose_initial":    120,
-    "glucose_target":     100,
-    "ic_ratio":            10,
-    "correction_factor":   40,
+    "glucose_target":     110,
+    "ic_ratio":            18,
+    "correction_factor":  142,
     "insulin_type_val":   list(model.INSULIN_PROFILES.keys())[0],
     "duration_min":       300,
     "resolution_min":       1,
@@ -106,9 +106,16 @@ wait_time_min = int(st.session_state["wait_time_val"])
 
 t = model.generate_time_axis(duration_min, resolution_min)
 
+# Escala de comida coherente con el perfil del paciente.
+# CF/IC ≈ mg/dL que sube 1 g de HC en este paciente.
+# Garantiza que la dosis recomendada (carbs/IC unidades, cada una baja CF mg/dL)
+# compense exactamente el efecto de la comida, sin hiper ni hipo artificial.
+_meal_scale = correction_factor / max(ic_ratio, 1)
+
 meal_rate = model.meal_glucose_rate(
     t=t, carbs_g=carbs_g, glycemic_index=glycemic_index,
     absorption_time_min=absorption_time_min, gi_sensitivity=gi_sensitivity,
+    meal_rate_scale=_meal_scale,
 )
 insulin_rate = model.insulin_glucose_rate(
     t=t, units=insulin_units, insulin_type=insulin_type,
@@ -156,8 +163,8 @@ if page == "🩸 Simulador":
         st.markdown("#### 🍽️ Comida y espera")
         st.slider("Hidratos de carbono (g)", 0, 200, step=5, key="carbs_g",
             help="Gramos de HC de la comida. Cambia este valor para ver cómo se ajusta la dosis recomendada.")
-        st.slider("Tiempo espera bolo→comida (min)", -30, 60, step=5, key="wait_time_val",
-            help="Positivo (+): pre-bolo (recomendado). Negativo (−): post-bolo.")
+        st.slider("Tiempo de espera (min)", -30, 60, step=5, key="wait_time_val",
+            help="+ : primero insulina → luego come. − : primero come → luego insulina.")
 
         # ── Dosis recomendada ────────────────────────────────────────────────
         st.markdown("---")
@@ -169,8 +176,8 @@ if page == "🩸 Simulador":
                 "Insulina", f"{_suggested_rounded:.1f} U",
                 delta=f"Cob {_coverage:.1f} + Corr {_correction:.1f}",
                 delta_color="off",
-                help=f"Cobertura: {carbs_g} g ÷ {ic_ratio} g/U = {_coverage:.1f} U  \n"
-                     f"Corrección: ({glucose_initial}−{glucose_target}) ÷ {correction_factor} = {_correction:.1f} U",
+                help=f"Cobertura: {carbs_g} g ÷ prop. 1:{ic_ratio} = {_coverage:.1f} U  \n"
+                     f"Corrección: ({glucose_initial}−{glucose_target}) ÷ FC 1:{correction_factor} = {_correction:.1f} U",
             )
         with m2:
             st.metric(
@@ -210,9 +217,9 @@ if page == "🩸 Simulador":
         st.markdown("#### 💉 Análisis de dosis")
 
         st.metric("Cobertura HC", f"{insulin_coverage:.1f} U",
-            help=f"{carbs_g} g HC ÷ {ic_ratio} g/U")
+            help=f"{carbs_g} g HC ÷ proporción 1:{ic_ratio}")
         st.metric("Corrección glucemia", f"{insulin_correction:.1f} U",
-            help=f"max(0, ({glucose_initial}−{glucose_target}) ÷ {correction_factor})")
+            help=f"max(0, ({glucose_initial}−{glucose_target}) ÷ factor 1:{correction_factor})")
         st.metric("Total sugerido", f"{insulin_suggested:.1f} U",
             help="Cobertura + Corrección")
         _delta_label = (
@@ -350,15 +357,15 @@ if page == "🩸 Simulador":
                 help="Glucosa en sangre al inicio de la comida (basal de referencia).")
             st.slider("Glucosa objetivo (mg/dL)", 70, 180, step=5, key="glucose_target",
                 help="Valor deseado para calcular la insulina de corrección.")
-            st.slider("Ratio HC/insulina (g/U)", 1, 30, step=1, key="ic_ratio",
-                help="Gramos de HC cubiertos por 1 U de insulina.")
-            st.slider("Factor de corrección (mg/dL/U)", 10, 100, step=5, key="correction_factor",
-                help="Cuántos mg/dL reduce 1 U de insulina respecto al objetivo.")
+            st.slider("Proporción de carbohidratos 1:X (g/U)", 5, 60, step=1, key="ic_ratio",
+                help="Gramos de HC cubiertos por 1 U de insulina. Ej: 1:18 → 1 U cubre 18 g de HC.")
+            st.slider("Factor de corrección 1:X (mg/dL/U)", 20, 300, step=5, key="correction_factor",
+                help="mg/dL que reduce 1 U de insulina. Ej: 1:142 → 1 U baja 142 mg/dL.")
 
     with pc3:
         with st.expander("💉 Insulina", expanded=False):
-            st.slider("Unidades administradas", 0.0, 50.0, step=0.5, key="insulin_units_val",
-                help="Dosis real del bolo prandial.")
+            st.slider("Unidades administradas", 0.0, 50.0, step=0.1, key="insulin_units_val",
+                help="Dosis real del bolo prandial. Paso de 0,1 U (útil para bomba).")
             st.selectbox(
                 "Tipo de insulina", options=list(model.INSULIN_PROFILES.keys()),
                 key="insulin_type_val",
@@ -492,23 +499,24 @@ vaso de zumo tienen HC similares, pero el zumo sube el azúcar mucho más rápid
         """)
 
         st.divider()
-        st.markdown("#### ⏱️ C. Tiempo de espera (pre-bolo)")
+        st.markdown("#### ⏱️ C. Tiempo de espera")
         st.markdown("""
-El **pre-bolo** es el tiempo que esperas entre ponerte la insulina y empezar
-a comer. Es uno de los factores que más influye en el control glucémico
-postprandial, especialmente con insulinas rápidas.
+El **tiempo de espera** es el tiempo entre la inyección de insulina y el
+inicio de la comida. Es uno de los factores que más influye en el control
+glucémico postprandial, especialmente con insulinas rápidas.
 
-- **Sin espera (0 min):** la insulina y la comida empiezan a la vez. La
-  glucosa sube antes de que la insulina tenga efecto → pico más alto.
-- **Con espera (+15 min):** la insulina lleva ventaja. Cuando el azúcar
-  de la comida empieza a subir, la insulina ya está actuando → pico más bajo.
-- **Post-bolo (valor negativo):** te pones la insulina después de empezar
-  a comer. El pico inicial es aún mayor.
+- **Valor positivo (+15 min): primero insulina → luego come.** La insulina
+  lleva 15 minutos de ventaja. Cuando el azúcar empieza a subir, ya está
+  actuando → pico más bajo.
+- **Cero (0 min):** insulina y comida a la vez. La glucosa sube antes de
+  que la insulina tenga efecto → pico más alto.
+- **Valor negativo (−15 min): primero come → luego insulina.** La insulina
+  se inyecta 15 min después de empezar a comer. El pico inicial es aún mayor.
 
 | Si... | En la curva verás... |
 |---|---|
-| **Aumentas** el tiempo de espera | El pico baja y la curva es más plana |
-| **Reduces** el tiempo de espera | El pico sube más y ocurre antes |
+| **Aumentas** el tiempo de espera (más positivo) | El pico baja y la curva es más plana |
+| **Reduces** el tiempo de espera (negativo) | El pico sube más y ocurre antes |
 
 > La recomendación varía: con glucosa alta antes de comer o alimentos de
 > IG alto, conviene esperar más tiempo (15–20 min).
